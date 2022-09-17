@@ -54,7 +54,7 @@ func Worker(mapf func(string, string) []KeyValue,
 		case "ReduceJob":
 			doReduceTask(response, reducef)
 		case "WaitJob":
-			time.Sleep(time.Second)
+			time.Sleep(5*time.Second)
 		case "CompleteJob":
 			return
 		default:
@@ -63,66 +63,78 @@ func Worker(mapf func(string, string) []KeyValue,
 	}
 
 	// uncomment to send the Example RPC to the coordinator.
-	//CallExample()
+	// CallExample()
 }
-func doHeartbeat() HeartbeatReply {
+func doHeartbeat() *HeartbeatReply {
 	request := HeartbeatRequest{}
 	reply := HeartbeatReply{}
 	ok := call("Coordinator.Heartbeat", &request, &reply)
+	log.Printf("\nworker recevied  doHeartbeat reply:%v\n\n",reply)
 	if ok {
-		return reply
+		return &reply
 	} else {
 		fmt.Printf("call failed!\n")
 	}
-	return HeartbeatReply{}
+	return &HeartbeatReply{}
 }
 
-func doMapTask(reply HeartbeatReply, mapf func(string, string) []KeyValue) {
+func doMapTask(reply *HeartbeatReply, mapf func(string, string) []KeyValue) {
 
 	intermediate := []KeyValue{}
 
 	//读取该map所属的文件
-	for _, task := range reply.tasks {
-		file, err := os.Open(task.fileName)
+	for _, task := range reply.Tasks {
+		file, err := os.Open(task.FileName)
 		if err != nil {
-			log.Fatalf("cannot open %v", task.fileName)
+			log.Fatalf("cannot open %v", task.FileName)
 		}
 		content, err := ioutil.ReadAll(file)
 		if err != nil {
-			log.Fatalf("cannot read %v", task.fileName)
+			log.Fatalf("cannot read %v", task.FileName)
 		}
 		file.Close()
-		kva := mapf(task.fileName, string(content))
+		kva := mapf(task.FileName, string(content))
 		intermediate = append(intermediate, kva...)
 	}
 	var interFiles []string
+	interfileMap := make(map[string][]KeyValue)
 	//把intermediate存到文件中 mr-X-Y 中间文件中
 	for _, kv := range intermediate {
-		Y := ihash(kv.Key) % reply.nReduce
-		filename := fmt.Sprintf("mr-%d-%d", reply.X, Y)
+		Y := ihash(kv.Key) % (reply.NReduce - 1)
+		filename := fmt.Sprintf("mr-%d-%d", reply.X, Y + 1)
 		interFiles  = append(interFiles,filename)
-		//先打开文件，如果不存在，则创建
-		file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+		interfileMap[filename] = append(interfileMap[filename],kv)
+	}
+
+	for filename,kv := range interfileMap{
+		file,err := ioutil.TempFile("",filename)
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("create temp file err:%v\n",err.Error())
 		}
 		enc := json.NewEncoder(file)
-		err = enc.Encode(&kv)
-		if err != nil {
-			log.Fatalf("encode file error:%v", err.Error())
+		for _, v :=  range kv {
+		  err := enc.Encode(&v)
+		  if err != nil {
+			  log.Fatalf("encode v error:%v",err.Error())
+		  }
+		}
+		err = os.Rename(filename,filename)
+		if err != nil{
+			log.Fatalf("rename file error:%v\n",err.Error())
 		}
 	}
 
 	var completeFiles []int
-	for _, task := range reply.tasks {
-		completeFiles = append(completeFiles, task.fileId)
+	for _, task := range reply.Tasks {
+		completeFiles = append(completeFiles, task.FileId)
 	}
 
 	//汇报工作
 	request := ReportRequest{
-		fileIds: completeFiles,
-		fileNames: interFiles,
+		FileIds: completeFiles,
+		FileNames: interFiles,
 	}
+	log.Printf("map report %v\n",request)
 	reportReply := ReportReply{}
 	ok := call("Coordinator.Report", &request, &reportReply)
 	if ok {
@@ -130,10 +142,11 @@ func doMapTask(reply HeartbeatReply, mapf func(string, string) []KeyValue) {
 	} else {
 		fmt.Printf("map report call failed!\n")
 	}
+	return
 
 }
 
-func doReduceTask(reply HeartbeatReply, reducef func(string, []string) string) {
+func doReduceTask(reply *HeartbeatReply, reducef func(string, []string) string) {
 	var intermediate []KeyValue
 	for i := 1; i <= reply.X; i++ {
 		filename := fmt.Sprintf("mr-%d-%d", i, reply.Y)
@@ -182,13 +195,13 @@ func doReduceTask(reply HeartbeatReply, reducef func(string, []string) string) {
 	ofile.Close()
 
 	var doneIds = make([]int,0)
-	for _, t := range reply.tasks{
-		doneIds = append(doneIds,t.fileId)
+	for _, t := range reply.Tasks{
+		doneIds = append(doneIds,t.FileId)
 	}
 	
 	//reduce的汇报工作
 	request := ReportRequest{
-		fileIds:doneIds,
+		FileIds:doneIds,
 	}
 	reportReply := ReportReply{}
 	ok := call("Coordinator.Report", &request, &reportReply)
@@ -197,7 +210,7 @@ func doReduceTask(reply HeartbeatReply, reducef func(string, []string) string) {
 	} else {
 		fmt.Printf("map report call failed!\n")
 	}
-
+	return
 
 }
 
@@ -232,9 +245,9 @@ func CallExample() {
 // usually returns true.
 // returns false if something goes wrong.
 func call(rpcname string, args interface{}, reply interface{}) bool {
-	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
-	sockname := coordinatorSock()
-	c, err := rpc.DialHTTP("unix", sockname)
+	c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
+	// sockname := coordinatorSock()
+	// c, err := rpc.DialHTTP("unix", sockname)
 	if err != nil {
 		log.Fatal("dialing:", err)
 	}

@@ -29,15 +29,15 @@ type HeartbeatRequest struct{
 
 type HeartbeatReply struct{
 	JobType string
-	tasks []Task
-	nReduce int
+	Tasks []Task
+	NReduce int
 	X int
 	Y int
 }
 
 type ReportRequest struct{
-	fileIds []int
-	fileNames []string
+	FileIds []int
+	FileNames []string
 	Y     int
 }
 
