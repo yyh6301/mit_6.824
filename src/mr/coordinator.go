@@ -17,23 +17,22 @@ type Coordinator struct {
 	mapTasks      	 []Task
 	reduceTasks 	 []Task
 	nReduce    int
+	nMap       int
 
-	X int //map Number
-	Y int //reduce Number
+	X int //map ID
+	Y int //reduce ID
 
 	//map phase   reduce phase
 	phase string
 
-	// mmu sync.Mutex
-	// rmu sync.Mutex
 
-	heartbeatCh chan heartbeatMsg
+	HeartbeatCh chan HeartbeatMsg
 	reportCh    chan reportMsg
 	// doneCh      chan struct{}
 }
 
-type heartbeatMsg struct {
-	response *HeartBeatReply
+type HeartbeatMsg struct {
+	reply *HeartbeatReply
 	ok       chan struct{}
 }
 
@@ -54,17 +53,21 @@ type Task struct {
 // Your code here -- RPC handlers for the worker to call.
 
 	// worker请求任务：
-func (c *Coordinator) Heartbeat(request *HeartBeatRequest, response *HeartBeatReply) error {
-	msg := heartbeatMsg{response, make(chan struct{})}
-	c.heartbeatCh <- msg
+func (c *Coordinator) Heartbeat(request *HeartbeatRequest, reply *HeartbeatReply) error {
+	msg := HeartbeatMsg{reply, make(chan struct{})}
+	log.Printf("Heartbeat received worker...\n")
+	c.HeartbeatCh <- msg
 	<-msg.ok
+	log.Printf("Heartbeat complete...\n")
 	return nil
 }
 
-func (c *Coordinator) Report(request *ReportRequest, response *ReportReply) error {
+func (c *Coordinator) Report(request *ReportRequest, reply *ReportReply) error {
 	msg := reportMsg{request, make(chan struct{})}
+	log.Printf("Worker report message...\n")
 	c.reportCh <- msg
 	<-msg.ok
+	log.Printf("Worker report message complete...")
 	return nil
 }
 
@@ -72,11 +75,11 @@ func (c *Coordinator) schedule() {
 	// c.initMapPhase()
 	for {
 		select {
-		case msg := <-c.heartbeatCh:
-                    c.doHeartBeat(msg.response)
+		case msg := <-c.HeartbeatCh:
+                c.doHeartbeat(msg.reply)
 			msg.ok <- struct{}{}
 		case msg := <-c.reportCh:
-                    c.doReport(msg.request)
+                c.doReport(msg.request)
 			msg.ok <- struct{}{}
 		}
 	}
@@ -84,45 +87,34 @@ func (c *Coordinator) schedule() {
 
 
 
-func (c *Coordinator) doHeartBeat(reply *HeartBeatReply){
-	// c.mmu.Lock()
-	// defer c.mmu.Unlock()
-	log.Printf("HeartBeat received worker...\n")
-
+func (c *Coordinator) doHeartbeat(reply *HeartbeatReply){
 	switch c.phase {
 	case "map":
-		// 1.map phase 阶段，判断是否还有未开始的任务或超时的任务
-		// var mapTask []Task
-	
-		for _, task := range c.mapTasks {
-
-			if task.status == 1 {
-				// mapTask = append(mapTask, task)
-				// if len(mapTask) >= 5 {
-
-				c.X++
-				// t := Task{fileName: task.fileName, status: 2, fileId: task.fileId}
-				c.mapTasks[task.fileId].status =  2
-
-				reply.JobType = "MapTask"
-				reply.tasks = []Task{task}
-				reply.X = c.X
-				reply.nReduce = c.nReduce
-				return 
-				// }
+		// 1.map phase 阶段，把input files 划分成 N个splice，分配给map
+		if c.X <= c.nMap{
+			c.X++
+			var replyTask []Task
+			for i,task := range c.mapTasks{
+				h := ihash(task.fileName) % c.nMap
+				if h == c.X && task.status == 1{
+					c.mapTasks[i].status = 2
+					replyTask = append(replyTask,task)
+				}
 			}
+			c.hearbeatReply(reply,"MapJob",replyTask)
+			return
 		}
-
 
 		//2.如果所有任务已经开始且没有超时，worker等待
 		isWait := true
-		for _, task := range c.reduceTasks {
-			if task.status != 4 && task.status != 5 {
+		for _, task := range c.mapTasks {
+			// task.status != 2 &&
+			if  task.status == 3 {
 				isWait = false
 			}
 		}
 		if isWait {
-			reply.JobType = "WaitTask"
+			c.hearbeatReply(reply,"WaitJob",[]Task{})
 			return 
 		}
 
@@ -132,37 +124,35 @@ func (c *Coordinator) doHeartBeat(reply *HeartBeatReply){
 		if c.Y <= c.nReduce {
 			c.Y++
 			//把取走的任务标志为正在执行的状态
-			for _, task := range c.reduceTasks {
+			var replyTask []Task
+			for i, task := range c.reduceTasks {
 				ss := strings.Split(task.fileName, "-")
 				s, err := strconv.Atoi(ss[2])
 				if err != nil {
 					log.Fatalf("conv to int error:%s", err.Error())
 				}
 				if s == c.Y {
-
-					// t := Task{fileName: task.fileName, status: 4, fileId: task.fileId}
-					c.reduceTasks[task.fileId].status = 4
+					c.reduceTasks[i].status = 2
+					replyTask = append(replyTask,task)
 				}
 			}
 			//响应给worker
-			reply.Y = c.Y
-			reply.JobType = "ReduceTask"
+			c.hearbeatReply(reply,"ReduceTask",replyTask)
 			return 
 		}
 
 		isWait := true
 		for _, task := range c.reduceTasks {
-			if task.status != 4 && task.status != 5 {
+			// task.status != 2 && 
+			if task.status == 3 {
 				isWait = false
 			}
 		}
-
 		if isWait {
-			reply.JobType = "WaitTask"
+			c.hearbeatReply(reply,"WaitJob",[]Task{})
 			return 
 		}
-
-		reply.JobType = "CompleteTask"
+		c.hearbeatReply(reply,"CompleteJob",[]Task{})
 		return 
 	}
 	 
@@ -170,43 +160,34 @@ func (c *Coordinator) doHeartBeat(reply *HeartBeatReply){
 
 // worker汇报任务：
 func (c *Coordinator) doReport(request *ReportRequest){
-
-
 	switch c.phase {
 	case "map":
 		//map时期提交的汇报
+		//完成任务的id
 		for fileId := range request.fileIds {
-
-			// task := Task{status: 3}
 			c.mapTasks[fileId].status = 3
-
 		}
-
+		//待完成的任务name
 		for _, filename := range request.fileNames {
-
-			t := Task{fileId:len(c.reduceTasks) + 1,fileName: filename, status: 4}
+			t := Task{fileId:len(c.reduceTasks) + 1,fileName: filename, status: 1}
 			c.reduceTasks = append(c.reduceTasks,t)
-
 		}
+		return
 
 	case "reduce":
-		//TODO 这里代码可以优化成worker端直接把完成的FileID传过来，这边直接改fileid就行，不用再计算
-		for _, task := range c.reduceTasks {
-			ss := strings.Split(task.fileName, "-")
-			s, err := strconv.Atoi(ss[2])
-			if err != nil {
-				log.Fatalf("conv to int error:%s", err.Error())
-			}
-			if s == request.Y {
-
-				// t := Task{fileName: task.fileName, status: 5, fileId: task.fileId}
-				c.reduceTasks[task.fileId].status = 5 
-
-			}
+		for fileId := range request.fileIds {
+			c.reduceTasks[fileId].status = 3
 		}
-
+		return
 	}
-	
+}
+
+func (c *Coordinator) hearbeatReply(reply *HeartbeatReply,jobType string,tasks []Task){
+	reply.JobType = jobType
+	reply.tasks = tasks
+	reply.X = c.X
+	reply.Y = c.Y
+	reply.nReduce = c.nReduce
 }
 
 // an example RPC handler.
@@ -246,7 +227,7 @@ func (c *Coordinator) Done() bool {
 	}
 
 	for _, task := range c.reduceTasks {
-		if task.status != 5 {
+		if task.status != 3 {
 			isComplete = false
 		}
 	}
@@ -265,9 +246,12 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{
 		phase:   "map",
 		nReduce: nReduce,
+		nMap :  10,
+		X: 0,
+		Y: 0,
 		mapTasks:  make([]Task,len(files)),
 		reduceTasks: make([]Task,0), 
-		heartbeatCh: make(chan heartbeatMsg),
+		HeartbeatCh: make(chan HeartbeatMsg),
 		reportCh :   make(chan reportMsg),
 	}
 

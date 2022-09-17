@@ -23,11 +23,11 @@ type ExampleReply struct {
 }
 
 // Add your RPC definitions here.
-type HeartBeatRequest struct{
+type HeartbeatRequest struct{
 }
 
 
-type HeartBeatReply struct{
+type HeartbeatReply struct{
 	JobType string
 	tasks []Task
 	nReduce int

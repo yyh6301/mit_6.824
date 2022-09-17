@@ -46,8 +46,8 @@ func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 	// Your worker implementation here.
 	for {
-		response := doHeartBeat()
-		log.Printf("Worker: receive coordinator's heartbeat %v \n", response)
+		response := doHeartbeat()
+		log.Printf("Worker: receive coordinator's Heartbeat %v \n", response)
 		switch response.JobType {
 		case "MapJob":
 			doMapTask(response, mapf)
@@ -65,19 +65,19 @@ func Worker(mapf func(string, string) []KeyValue,
 	// uncomment to send the Example RPC to the coordinator.
 	//CallExample()
 }
-func doHeartBeat() HeartBeatReply {
-	request := HeartBeatRequest{}
-	reply := HeartBeatReply{}
-	ok := call("Coordinator.HeartBeat", &request, &reply)
+func doHeartbeat() HeartbeatReply {
+	request := HeartbeatRequest{}
+	reply := HeartbeatReply{}
+	ok := call("Coordinator.Heartbeat", &request, &reply)
 	if ok {
 		return reply
 	} else {
 		fmt.Printf("call failed!\n")
 	}
-	return HeartBeatReply{}
+	return HeartbeatReply{}
 }
 
-func doMapTask(reply HeartBeatReply, mapf func(string, string) []KeyValue) {
+func doMapTask(reply HeartbeatReply, mapf func(string, string) []KeyValue) {
 
 	intermediate := []KeyValue{}
 
@@ -85,7 +85,6 @@ func doMapTask(reply HeartBeatReply, mapf func(string, string) []KeyValue) {
 	for _, task := range reply.tasks {
 		file, err := os.Open(task.fileName)
 		if err != nil {
-
 			log.Fatalf("cannot open %v", task.fileName)
 		}
 		content, err := ioutil.ReadAll(file)
@@ -96,17 +95,17 @@ func doMapTask(reply HeartBeatReply, mapf func(string, string) []KeyValue) {
 		kva := mapf(task.fileName, string(content))
 		intermediate = append(intermediate, kva...)
 	}
-	var fileNames []string
+	var interFiles []string
 	//把intermediate存到文件中 mr-X-Y 中间文件中
 	for _, kv := range intermediate {
 		Y := ihash(kv.Key) % reply.nReduce
 		filename := fmt.Sprintf("mr-%d-%d", reply.X, Y)
-		fileNames  = append(fileNames,filename)
-		file, err := os.Create(filename)
+		interFiles  = append(interFiles,filename)
+		//先打开文件，如果不存在，则创建
+		file, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
 		if err != nil {
-			log.Fatalf("cannot create file:%s", filename)
+			log.Fatal(err)
 		}
-
 		enc := json.NewEncoder(file)
 		err = enc.Encode(&kv)
 		if err != nil {
@@ -122,7 +121,7 @@ func doMapTask(reply HeartBeatReply, mapf func(string, string) []KeyValue) {
 	//汇报工作
 	request := ReportRequest{
 		fileIds: completeFiles,
-		fileNames: fileNames,
+		fileNames: interFiles,
 	}
 	reportReply := ReportReply{}
 	ok := call("Coordinator.Report", &request, &reportReply)
@@ -134,7 +133,7 @@ func doMapTask(reply HeartBeatReply, mapf func(string, string) []KeyValue) {
 
 }
 
-func doReduceTask(reply HeartBeatReply, reducef func(string, []string) string) {
+func doReduceTask(reply HeartbeatReply, reducef func(string, []string) string) {
 	var intermediate []KeyValue
 	for i := 1; i <= reply.X; i++ {
 		filename := fmt.Sprintf("mr-%d-%d", i, reply.Y)
@@ -182,9 +181,14 @@ func doReduceTask(reply HeartBeatReply, reducef func(string, []string) string) {
 
 	ofile.Close()
 
+	var doneIds = make([]int,0)
+	for _, t := range reply.tasks{
+		doneIds = append(doneIds,t.fileId)
+	}
+	
 	//reduce的汇报工作
 	request := ReportRequest{
-		Y:reply.Y,
+		fileIds:doneIds,
 	}
 	reportReply := ReportReply{}
 	ok := call("Coordinator.Report", &request, &reportReply)
