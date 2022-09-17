@@ -14,8 +14,8 @@ import (
 
 type Coordinator struct {
 	// Your definitions here.
-	mm    sync.Mutex
-	rm    sync.Mutex
+	// mm    sync.Mutex
+	// rm    sync.Mutex
 	mapTasks      	 []Task
 	reduceTasks 	 []Task
 	nReduce    int
