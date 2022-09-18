@@ -60,16 +60,15 @@ func (c *Coordinator) Heartbeat(request *HeartbeatRequest, reply *HeartbeatReply
 	// log.Printf("Heartbeat received worker...\n")
 	c.HeartbeatCh <- msg
 	<-msg.ok
-	log.Printf("Heartbeat complete...reply:%v\n",reply)
+	log.Printf("Heartbeat reply to worker:%v\n",reply)
 	return nil
 }
 
 func (c *Coordinator) Report(request *ReportRequest, reply *ReportReply) error {
 	msg := reportMsg{request, make(chan struct{})}
-	log.Printf("Worker report message...request:%v\n",request)
+	log.Printf("recevied worker report:%v\n",request)
 	c.reportCh <- msg
 	<-msg.ok
-	// log.Printf("Worker report message complete...")
 	return nil
 }
 
@@ -97,15 +96,15 @@ func (c *Coordinator) doHeartbeat(reply *HeartbeatReply){
 			c.X++
 			var replyTask []Task
 			for i,task := range c.mapTasks{
-				h := ihash(task.FileName) % (c.nMap - 1)
-				if h + 1  == c.X && task.Status == 1{
+				// h := ihash(task.FileName) % (c.nMap - 1)
+				// h + 1  == c.X &&
+				if  task.Status == 1{
 					c.mapTasks[i].Status = 2
 					replyTask = append(replyTask,task)
+					break
 				}
 			}
-			// log.Printf("replyTask: %v\n",replyTask)
 			c.hearbeatReply(reply,"MapJob",replyTask)
-			// log.Printf("map reply:%v\n",reply)
 			return
 		}
 
@@ -125,7 +124,8 @@ func (c *Coordinator) doHeartbeat(reply *HeartbeatReply){
 
 		//3. map阶段完成，进入reduce phase阶段
 		c.phase = "reduce"
-		log.Printf("进入reduce阶段...")
+		log.Printf("进入reduce阶段...\n当前coordinator状态：%v\n",c)
+		c.hearbeatReply(reply,"WaitJob",[]Task{})
 	case "reduce":
 		if c.Y <= c.nReduce {
 			c.Y++
@@ -135,7 +135,7 @@ func (c *Coordinator) doHeartbeat(reply *HeartbeatReply){
 				ss := strings.Split(task.FileName, "-")
 				s, err := strconv.Atoi(ss[2])
 				if err != nil {
-					log.Fatalf("conv to int error:%s", err.Error())
+					log.Fatalf("conv to int error:%s\n", err.Error())
 				}
 				if s == c.Y {
 					c.reduceTasks[i].Status = 2
@@ -143,7 +143,7 @@ func (c *Coordinator) doHeartbeat(reply *HeartbeatReply){
 				}
 			}
 			//响应给worker
-			c.hearbeatReply(reply,"ReduceTask",replyTask)
+			c.hearbeatReply(reply,"ReduceJob",replyTask)
 			return 
 		}
 
@@ -172,7 +172,7 @@ func (c *Coordinator) doReport(request *ReportRequest){
 	case "map":
 		//map时期提交的汇报
 		//完成任务的id
-		log.Printf("received map report... %v",request)
+		// log.Printf("received map report... %v",request)
 		for fileId := range request.FileIds {
 			c.mapTasks[fileId].Status = 3
 		}
@@ -184,7 +184,7 @@ func (c *Coordinator) doReport(request *ReportRequest){
 		return
 
 	case "reduce":
-		log.Printf("received reduce report...%v",request)
+		// log.Printf("received reduce report...%v",request)
 		for fileId := range request.FileIds {
 			c.reduceTasks[fileId].Status = 3
 		}
@@ -256,7 +256,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{
 		phase:   "map",
 		nReduce: nReduce,
-		nMap :  10,
+		nMap :  8,
 		X: 0,
 		Y: 0,
 		mapTasks:  make([]Task,len(files)),

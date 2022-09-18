@@ -96,18 +96,21 @@ func doMapTask(reply *HeartbeatReply, mapf func(string, string) []KeyValue) {
 		kva := mapf(task.FileName, string(content))
 		intermediate = append(intermediate, kva...)
 	}
-	var interFiles []string
+
 	interfileMap := make(map[string][]KeyValue)
 	//把intermediate存到文件中 mr-X-Y 中间文件中
 	for _, kv := range intermediate {
-		Y := ihash(kv.Key) % (reply.NReduce - 1)
-		filename := fmt.Sprintf("mr-%d-%d", reply.X, Y + 1)
-		interFiles  = append(interFiles,filename)
+		Y := ihash(kv.Key) % reply.NReduce
+		filename := fmt.Sprintf("mr-%d-%d", reply.X, Y)
+
 		interfileMap[filename] = append(interfileMap[filename],kv)
 	}
 
+	var interFiles []string
 	for filename,kv := range interfileMap{
 		file,err := ioutil.TempFile("",filename)
+		interFiles  = append(interFiles,filename)
+		// file,err := os.Create(filename)
 		if err != nil {
 			log.Fatalf("create temp file err:%v\n",err.Error())
 		}
@@ -118,7 +121,7 @@ func doMapTask(reply *HeartbeatReply, mapf func(string, string) []KeyValue) {
 			  log.Fatalf("encode v error:%v",err.Error())
 		  }
 		}
-		err = os.Rename(filename,filename)
+		err = os.Rename(file.Name(),filename)
 		if err != nil{
 			log.Fatalf("rename file error:%v\n",err.Error())
 		}
@@ -152,7 +155,8 @@ func doReduceTask(reply *HeartbeatReply, reducef func(string, []string) string) 
 		filename := fmt.Sprintf("mr-%d-%d", i, reply.Y)
 		file, err := os.Open(filename)
 		if err != nil {
-			log.Fatalf("open file error:%v", err.Error())
+			log.Printf("open file error:%v", err.Error())
+			continue
 		}
 		dec := json.NewDecoder(file)
 
