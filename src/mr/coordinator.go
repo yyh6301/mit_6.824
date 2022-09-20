@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // import "time"
@@ -30,7 +31,7 @@ type Coordinator struct {
 
 	HeartbeatCh chan HeartbeatMsg
 	reportCh    chan reportMsg
-	// doneCh      chan struct{}
+	doneCh      chan struct{}
 }
 
 type HeartbeatMsg struct {
@@ -46,7 +47,7 @@ type reportMsg struct {
 type Task struct {
 	FileName string
 	FileId   int
-	// startTime int64
+	StartTime int64
 
 	//1.未开始  2.正在执行  3.map phase 阶段已完成  4.reduce phase阶段在执行， 5.reduce phase阶段完成
 	Status int
@@ -100,6 +101,7 @@ func (c *Coordinator) doHeartbeat(reply *HeartbeatReply){
 				// h + 1  == c.X &&
 				if  task.Status == 1{
 					c.mapTasks[i].Status = 2
+					c.mapTasks[i].StartTime = time.Now().Unix()
 					replyTask = append(replyTask,task)
 					break
 				}
@@ -112,6 +114,7 @@ func (c *Coordinator) doHeartbeat(reply *HeartbeatReply){
 		isWait := true
 		for _, task := range c.mapTasks {
 			// task.Status != 2 &&
+			lap := time.Now().Unix() - 
 			if  task.Status == 3 {
 				isWait = false
 			}
@@ -161,6 +164,7 @@ func (c *Coordinator) doHeartbeat(reply *HeartbeatReply){
 		}
 		log.Printf("reduce阶段完成....")
 		c.hearbeatReply(reply,"CompleteJob",[]Task{})
+		c.doneCh <- struct{}{}
 		return 
 	}
 	 
@@ -227,7 +231,7 @@ func (c *Coordinator) server() {
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
 	// ret := false
-
+	<- c.doneCh 
 	// Your code here.
 	isComplete := true
 	for _, task := range c.mapTasks {
@@ -263,6 +267,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		reduceTasks: make([]Task,0), 
 		HeartbeatCh: make(chan HeartbeatMsg),
 		reportCh :   make(chan reportMsg),
+		doneCh :  make(chan struct{}),
 	}
 
 	// Your code here.
