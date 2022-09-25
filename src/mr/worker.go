@@ -46,15 +46,33 @@ func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 	// Your worker implementation here.
 	for {
+		done := make(chan struct{}, 1)
 		response := doHeartbeat()
-		log.Printf("Worker: receive coordinator's Heartbeat %v \n", response)
+		// log.Printf("Worker: receive coordinator's Heartbeat %v \n", response)
 		switch response.JobType {
 		case "MapJob":
-			doMapTask(response, mapf)
+			go doMapTask(response, done,mapf)
+			select{
+			case <-done:
+				// fmt.Println("call successfully!!!")
+				break
+			case <-time.After(time.Duration(10 * time.Second)):
+				fmt.Println("timeout!!!")
+				return
+			}
+
 		case "ReduceJob":
-			doReduceTask(response, reducef)
+			go doReduceTask(response, done,reducef)
+			select{
+			case <-done:
+				// fmt.Println("call successfully!!!")
+				break
+			case <-time.After(time.Duration(10 * time.Second)):
+				fmt.Println("timeout!!!")
+				return
+			}
 		case "WaitJob":
-			time.Sleep(5*time.Second)
+			time.Sleep(3*time.Second)
 		case "CompleteJob":
 			return
 		default:
@@ -69,7 +87,7 @@ func doHeartbeat() *HeartbeatReply {
 	request := HeartbeatRequest{}
 	reply := HeartbeatReply{}
 	ok := call("Coordinator.Heartbeat", &request, &reply)
-	log.Printf("\nworker recevied  doHeartbeat reply:%v\n\n",reply)
+	// log.Printf("\nworker recevied  doHeartbeat reply:%v\n\n",reply)
 	if ok {
 		return &reply
 	} else {
@@ -78,7 +96,7 @@ func doHeartbeat() *HeartbeatReply {
 	return &HeartbeatReply{}
 }
 
-func doMapTask(reply *HeartbeatReply, mapf func(string, string) []KeyValue) {
+func doMapTask(reply *HeartbeatReply,done chan struct{}, mapf func(string, string) []KeyValue) {
 
 	intermediate := []KeyValue{}
 
@@ -101,7 +119,7 @@ func doMapTask(reply *HeartbeatReply, mapf func(string, string) []KeyValue) {
 	//把intermediate存到文件中 mr-X-Y 中间文件中
 	for _, kv := range intermediate {
 		Y := ihash(kv.Key) % reply.NReduce
-		filename := fmt.Sprintf("mr-%d-%d", reply.X, Y)
+		filename := fmt.Sprintf("mr-%d-%d", reply.X, (Y+1))
 
 		interfileMap[filename] = append(interfileMap[filename],kv)
 	}
@@ -137,7 +155,7 @@ func doMapTask(reply *HeartbeatReply, mapf func(string, string) []KeyValue) {
 		FileIds: completeFiles,
 		FileNames: interFiles,
 	}
-	log.Printf("map report %v\n",request)
+	// log.Printf("map report %v\n",request)
 	reportReply := ReportReply{}
 	ok := call("Coordinator.Report", &request, &reportReply)
 	if ok {
@@ -145,15 +163,17 @@ func doMapTask(reply *HeartbeatReply, mapf func(string, string) []KeyValue) {
 	} else {
 		fmt.Printf("map report call failed!\n")
 	}
-	return
+	done <- struct{}{}
 
 }
 
-func doReduceTask(reply *HeartbeatReply, reducef func(string, []string) string) {
+func doReduceTask(reply *HeartbeatReply,done chan struct{}, reducef func(string, []string) string) {
 	var intermediate []KeyValue
+	var doneFileNames []string
 	for i := 1; i <= reply.X; i++ {
 		filename := fmt.Sprintf("mr-%d-%d", i, reply.Y)
 		file, err := os.Open(filename)
+		doneFileNames = append(doneFileNames,filename)
 		if err != nil {
 			log.Printf("open file error:%v", err.Error())
 			continue
@@ -198,22 +218,19 @@ func doReduceTask(reply *HeartbeatReply, reducef func(string, []string) string) 
 
 	ofile.Close()
 
-	var doneIds = make([]int,0)
-	for _, t := range reply.Tasks{
-		doneIds = append(doneIds,t.FileId)
-	}
 	
 	//reduce的汇报工作
 	request := ReportRequest{
-		FileIds:doneIds,
+		FileNames:doneFileNames,
 	}
 	reportReply := ReportReply{}
 	ok := call("Coordinator.Report", &request, &reportReply)
 	if ok {
-		fmt.Printf("map report ok\n")
+		// fmt.Printf("reduce report ok\n")
 	} else {
-		fmt.Printf("map report call failed!\n")
+		log.Fatalf("map report call failed!\n")
 	}
+	done <- struct{}{}
 	return
 
 }
@@ -249,9 +266,9 @@ func CallExample() {
 // usually returns true.
 // returns false if something goes wrong.
 func call(rpcname string, args interface{}, reply interface{}) bool {
-	c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
-	// sockname := coordinatorSock()
-	// c, err := rpc.DialHTTP("unix", sockname)
+	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
+	sockname := coordinatorSock()
+	c, err := rpc.DialHTTP("unix", sockname)
 	if err != nil {
 		log.Fatal("dialing:", err)
 	}
