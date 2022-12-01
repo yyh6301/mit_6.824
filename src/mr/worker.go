@@ -54,7 +54,6 @@ func Worker(mapf func(string, string) []KeyValue,
 			go doMapTask(response, done,mapf)
 			select{
 			case <-done:
-				// fmt.Println("call successfully!!!")
 				break
 			case <-time.After(time.Duration(10 * time.Second)):
 				fmt.Println("timeout!!!")
@@ -65,7 +64,6 @@ func Worker(mapf func(string, string) []KeyValue,
 			go doReduceTask(response, done,reducef)
 			select{
 			case <-done:
-				// fmt.Println("call successfully!!!")
 				break
 			case <-time.After(time.Duration(10 * time.Second)):
 				fmt.Println("timeout!!!")
@@ -74,9 +72,11 @@ func Worker(mapf func(string, string) []KeyValue,
 		case "WaitJob":
 			time.Sleep(3*time.Second)
 		case "CompleteJob":
+			log.Printf("job complete,exit normally\n")
 			return
 		default:
-			log.Fatalf("unknow job type: %s", response.JobType)
+			log.Printf("unknow job type: %s\n", response.JobType)
+			return
 		}
 	}
 
@@ -86,14 +86,9 @@ func Worker(mapf func(string, string) []KeyValue,
 func doHeartbeat() *HeartbeatReply {
 	request := HeartbeatRequest{}
 	reply := HeartbeatReply{}
-	ok := call("Coordinator.Heartbeat", &request, &reply)
-	// log.Printf("\nworker recevied  doHeartbeat reply:%v\n\n",reply)
-	if ok {
-		return &reply
-	} else {
-		fmt.Printf("call failed!\n")
-	}
-	return &HeartbeatReply{}
+	call("Coordinator.Heartbeat", &request, &reply)
+	//if call faild,assume that the coordinator has exited because the job is done, and so the worker can terminate too.	
+	return &reply
 }
 
 func doMapTask(reply *HeartbeatReply,done chan struct{}, mapf func(string, string) []KeyValue) {
@@ -126,9 +121,9 @@ func doMapTask(reply *HeartbeatReply,done chan struct{}, mapf func(string, strin
 
 	var interFiles []string
 	for filename,kv := range interfileMap{
+		//使用tempfile+rename，保证读写文件的原子性
 		file,err := ioutil.TempFile("",filename)
 		interFiles  = append(interFiles,filename)
-		// file,err := os.Create(filename)
 		if err != nil {
 			log.Fatalf("create temp file err:%v\n",err.Error())
 		}
@@ -155,11 +150,10 @@ func doMapTask(reply *HeartbeatReply,done chan struct{}, mapf func(string, strin
 		FileIds: completeFiles,
 		FileNames: interFiles,
 	}
-	// log.Printf("map report %v\n",request)
 	reportReply := ReportReply{}
 	ok := call("Coordinator.Report", &request, &reportReply)
 	if ok {
-		fmt.Printf("map report ok\n")
+		fmt.Printf("map report ok:%v\n\n",request)
 	} else {
 		fmt.Printf("map report call failed!\n")
 	}
@@ -226,13 +220,11 @@ func doReduceTask(reply *HeartbeatReply,done chan struct{}, reducef func(string,
 	reportReply := ReportReply{}
 	ok := call("Coordinator.Report", &request, &reportReply)
 	if ok {
-		// fmt.Printf("reduce report ok\n")
+		fmt.Printf("reduce report ok，%v\n\n",request)
 	} else {
 		log.Fatalf("map report call failed!\n")
 	}
 	done <- struct{}{}
-	return
-
 }
 
 // example function to show how to make an RPC call to the coordinator.

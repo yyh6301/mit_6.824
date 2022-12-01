@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"sync"
 	"log"
 	"net"
 	"net/http"
@@ -27,21 +28,22 @@ type Coordinator struct {
 	//map phase   reduce phase
 	phase string
 
-
-	HeartbeatCh chan HeartbeatMsg
-	reportCh    chan reportMsg
+	mu		sync.Mutex
+	// rmu		sync.Mutex
+	// HeartbeatCh chan struct{}
+	// reportCh    chan struct{}
 	doneCh      chan struct{}
 }
 
-type HeartbeatMsg struct {
-	reply *HeartbeatReply
-	ok       chan struct{}
-}
+// type HeartbeatMsg struct {
+// 	reply *HeartbeatReply
+// 	ok       chan struct{}
+// }
 
-type reportMsg struct {
-	request *ReportRequest
-	ok      chan struct{}
-}
+// type reportMsg struct {
+// 	request *ReportRequest
+// 	ok      chan struct{}
+// }
 
 type Task struct {
 	FileName string
@@ -56,38 +58,43 @@ type Task struct {
 
 	// worker请求任务：
 func (c *Coordinator) Heartbeat(request *HeartbeatRequest, reply *HeartbeatReply) error {
-	msg := HeartbeatMsg{reply, make(chan struct{})}
+	// msg := HeartbeatMsg{reply, make(chan struct{})}
 	// log.Printf("Heartbeat received worker...\n")
-	c.HeartbeatCh <- msg
-	<-msg.ok
+	c.mu.Lock()
+	c.doHeartbeat(reply)
+	c.mu.Unlock()
+	// <-c.HeartbeatCh
 	// log.Printf("Heartbeat reply to worker:%v\n",reply)
 	return nil
 }
 
 func (c *Coordinator) Report(request *ReportRequest, reply *ReportReply) error {
-	msg := reportMsg{request, make(chan struct{})}
-	// log.Printf("recevied worker report:%v\n",request)
-	c.reportCh <- msg
-	<-msg.ok
+	// msg := reportMsg{request, make(chan struct{})}
+	// // log.Printf("recevied worker report:%v\n",request)
+	// c.reportCh <- msg
+	// <-msg.ok
+	c.mu.Lock()
+	c.doReport(request)
+	c.mu.Unlock()
 	return nil
 }
 
-func (c *Coordinator) schedule() {
-	// c.initMapPhase()
-	for {
-		select {
-		case msg := <-c.HeartbeatCh:
-				c.doHeartbeat(msg.reply)
-			msg.ok <- struct{}{}
-		case msg := <-c.reportCh:
-				c.doReport(msg.request)
-			msg.ok <- struct{}{}
-		// case <-c.doneCh:
-		// 	log.Printf("coordinator done,schedulef exit\n")
-		// 	return
-		}
-	}
-}
+// func (c *Coordinator) schedule() {
+// 	// c.initMapPhase()
+// 	for {
+// 		select {
+// 		case msg := <-c.HeartbeatCh:
+// 				c.doHeartbeat(msg.reply)
+// 			msg.ok <- struct{}{}
+// 		case msg := <-c.reportCh:
+// 				c.doReport(msg.request)
+// 			msg.ok <- struct{}{}
+// 		// case <-c.doneCh:
+// 		// 	log.Printf("coordinator done,schedulef exit\n")
+// 		// 	return
+// 		}
+// 	}
+// }
 
 
 
@@ -112,27 +119,28 @@ func (c *Coordinator) doHeartbeat(reply *HeartbeatReply){
 
 		//2.如果所有任务已经开始且没有超时，worker等待
 
-		isWait := true
+		isWait := false
 		for i, task := range c.mapTasks {
 			// task.Status != 2 &&
 			lap := time.Now().Unix() - task.StartTime
 			//超时,删除
-			if lap >= 10 {
+			if lap >= 10 && task.Status == 2{
 				for j :=1 ;j <=c.nReduce;j++{
 					filename := fmt.Sprintf("mr-%d-%d",i+1,j)
 					os.Remove(filename)
 					log.Printf("remove file %s\n",filename)
 				}
 				c.mapTasks[i].StartTime = time.Now().Unix()
-				c.hearbeatReply(reply,"MapJob",[]Task{task},i+1,0)
+				c.hearbeatReply(reply,"MapJob",[]Task{task},i+1,c.Y)
+				log.Printf("map timeout reply:%v\n",reply)
 				return
 			}
-			if  task.Status == 3 {
-				isWait = false
+			if  task.Status != 3 {
+				isWait = true
 			}
 		}
 		if isWait {
-			log.Printf("等待map阶段...%v\n",c)
+			log.Printf("等待map阶段...\n",)
 			c.hearbeatReply(reply,"WaitJob",[]Task{},c.X,c.Y)
 			return 
 		}else{
@@ -165,12 +173,12 @@ func (c *Coordinator) doHeartbeat(reply *HeartbeatReply){
 			return 
 		}
 
-		isWait := true
+		isWait := false
 		for i, task := range c.reduceTasks {
 
 			lap := time.Now().Unix() - task.StartTime
 			//超时,删除
-			if lap >= 10 {
+			if lap >= 10  && task.Status == 2{
 				r := strings.Split(task.FileName,"-")
 				reduceID,_ := strconv.Atoi(r[2])
 				filename := fmt.Sprintf("mr-out-%d",reduceID)
@@ -179,17 +187,18 @@ func (c *Coordinator) doHeartbeat(reply *HeartbeatReply){
 					log.Printf("remove file error:%v\n",err.Error())
 				}
 				
-				log.Printf("reduce worker timeout  remove file %s\n",filename)
+				log.Printf("reduce worker timeout, remove file %s\n",filename)
 				c.reduceTasks[i].StartTime = time.Now().Unix()
-				c.hearbeatReply(reply,"ReduceJob",[]Task{task},0,reduceID)
+				c.hearbeatReply(reply,"ReduceJob",[]Task{task},c.X,reduceID)
+				log.Printf("reduce timeout reply:%v\n",reply)
 				return
 			}
-			if task.Status == 3 {
-				isWait = false
+			if task.Status != 3 {
+				isWait = true
 			}
 		}
 		if isWait {
-			log.Printf("等待reduce阶段...%v\n\n",c)
+			log.Printf("等待reduce阶段...\n")
 			c.hearbeatReply(reply,"WaitJob",[]Task{},c.X,c.Y)
 			return 
 		}else{
@@ -283,11 +292,11 @@ func (c *Coordinator) Done() bool {
 		}
 	}
 	if isComplete{
-		log.Printf("coordinartor is complete:%v!\n",c)
+		// log.Printf("coordinartor is complete:%v!\n",c)
 		return isComplete
 	}
 
-	log.Printf("coordinartor is working\n mapTasks:%v \n\n reduceTasks:%v \n\n",c.mapTasks,c.reduceTasks)
+	// log.Printf("coordinartor is working\n mapTasks:%v \n\n reduceTasks:%v \n\n",c.mapTasks,c.reduceTasks)
 
 	return isComplete
 	// return ret
@@ -305,8 +314,8 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		Y: 0,
 		mapTasks:  make([]Task,len(files)),
 		reduceTasks: make([]Task,0), 
-		HeartbeatCh: make(chan HeartbeatMsg),
-		reportCh :   make(chan reportMsg),
+		// HeartbeatCh: make(chan HeartbeatMsg),
+		// reportCh :   make(chan reportMsg),
 		doneCh :  make(chan struct{}),
 	}
 
@@ -317,7 +326,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		c.mapTasks[i].FileId = i
 		c.mapTasks[i].Status = 1
 	}
-	go c.schedule()
+	// go c.schedule()
 	c.server()
 
 	return &c
