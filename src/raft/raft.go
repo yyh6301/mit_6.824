@@ -5,7 +5,7 @@ package raft
 // the service (or tester). see comments below for
 // each of these functions for more details.
 //
-// rf = Make(...)
+// rf = Make(peers,me,persister,applyCh)
 //   create a new Raft server.
 // rf.Start(command interface{}) (index, term, isleader)
 //   start agreement on a new log entry
@@ -19,16 +19,16 @@ package raft
 
 import (
 	//	"bytes"
+	"fmt"
 	"sync"
 	"sync/atomic"
-	"fmt"
 
 	//	"6.824/labgob"
-	"6.824/labrpc"
 	"math/rand"
 	"time"
-)
 
+	"6.824/labrpc"
+)
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -71,7 +71,8 @@ type Raft struct {
 
 	//persistent stae on all servers
 	currentTerm int
-	voteState    vote
+	voter voter
+	// votedFor    int
 	// log       []logger
 
 	//volatile state on all servers
@@ -83,10 +84,12 @@ type Raft struct {
 	// matchIndex []int
 }
 
-type vote struct{
-	VoteFor int	//投票对象
-	Term    int //投票的任期
+//the vote 
+type voter struct{
+	VotedFor int
+	Term int
 }
+
 
 type logger struct{
 	Index int
@@ -166,7 +169,6 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
-
 }
 
 
@@ -215,36 +217,43 @@ type AppendEntriesReply struct{
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 
-	//如果voteState的term和args的term相等，则说明该结点在此轮已经投过票了
+	//如果votedFor的term和args的term相等，则说明该结点在此轮已经投过票了
 
-	//todo:判断args的log是否满足选举条件，再投票
-	if args.Term == rf.currentTerm && rf.voteState.Term < args.Term{
-		rf.mu.Lock()
-		
-		rf.voteState.Term = args.Term
-		rf.voteState.VoteFor = args.CandidateId
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	defer rf.persist()
+	defer DPrintf("{Node %v}'s state is {state %v,term %v,lastApplied %v} before processing requestVoteRequest %v and reply requestVoteResponse %v", rf.me, rf.status, rf.currentTerm,  rf.lastApplied, args, reply)
+
+	// fmt.Printf("peer %d term %d be asked vote args:%v\n",rf.me,rf.currentTerm,args)
+	if args.Term < rf.currentTerm || (rf.currentTerm == args.Term && args.CandidateId != rf.voter.VotedFor && rf.voter.VotedFor != -1){
 		reply.Term = rf.currentTerm
-		reply.VoteGranted = true
-		rf.mu.Unlock()
-		return 
+		reply.VoteGranted = false
+		return
 	}
 
-	if args.Term > rf.currentTerm {
-		rf.mu.Lock()
+	if args.Term > rf.currentTerm{
+		fmt.Printf("{peer %d term %d } term less than vote {peer %d term %d},become to follower\n",
+		rf.me,rf.currentTerm,args.CandidateId,args.Term)
+		rf.status = 1
 		rf.currentTerm = args.Term
-		rf.voteState.Term = args.Term
-		rf.voteState.VoteFor = args.CandidateId
-		reply.Term = rf.currentTerm
-		reply.VoteGranted = true
-		rf.mu.Unlock()
-		return 
+		rf.voter.VotedFor = -1
 	}
 
+	rf.voter.Term = args.Term
+	rf.voter.VotedFor =  args.CandidateId
+
+	 //todo:判断args的log是否满足选举条件，再投票
+	
 	reply.Term = rf.currentTerm
-	reply.VoteGranted = false
+	reply.VoteGranted = true
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	if args.Term > rf.currentTerm{
+		rf.currentTerm = args.Term
+		rf.status = 1
+	}
 	rf.lastApplied++
 }
 
@@ -382,23 +391,24 @@ func (rf *Raft) ticker() {
 		//• Vote for self
 		//• Reset election timer
 		//• Send RequestVote RPCs to all other servers
-
 	
 		rf.mu.Lock()
+		defer 	rf.mu.Unlock()
 		rf.status = 2
 		rf.currentTerm++
+		rf.voter.VotedFor = rf.me
+
 		//保证term++之后的vote还在，这样才能投给自己
-		if rf.voteState.Term < rf.currentTerm{
-			fmt.Printf("peer %d term %d voteFor myself\n",rf.me,rf.currentTerm)
-			rf.voteState.Term = rf.currentTerm
-			rf.voteState.VoteFor = rf.me
-		}else{
-			fmt.Printf("peer %d term %d had votedFor %d\n",rf.me,rf.voteState.Term,rf.voteState.VoteFor)
-			rf.status = 1
-			rf.mu.Unlock()
-			continue
-		}
-		rf.mu.Unlock()
+		// if rf.voter.Term < rf.currentTerm{
+		// 	fmt.Printf("peer %d term %d voteFor myself\n",rf.me,rf.currentTerm)
+		// 	rf.voter.VotedFor = rf.me
+		// }else{
+		// 	fmt.Printf("peer %d term %d had votedFor %d\n",rf.me,rf.currentTerm,rf.voter.VotedFor)
+		// 	rf.status = 1
+		// 	rf.mu.Unlock()
+		// 	continue
+		// }
+	
 
 
 		voteRequest := RequestVoteArgs{
@@ -414,29 +424,29 @@ func (rf *Raft) ticker() {
 		vote := 1
 		flag := false	//判断其他结点的任期是否比当前结点大，是则跳出候选
 
-		for i := range rf.peers{
-			if i == rf.me{
+		for peer := range rf.peers{
+
+			if peer == rf.me{
 				continue
 			}
-			rf.sendRequestVote(i,&voteRequest,&voteReply)
-
 			
+			rf.sendRequestVote(peer,&voteRequest,&voteReply)		
 			if voteReply.Term > rf.currentTerm{
 				fmt.Printf("peer %d term %d less than voteReply term %d,to be follower\n",
 				rf.me,rf.currentTerm,voteReply.Term)
 				rf.currentTerm = voteReply.Term
 				flag = true
 				rf.status = 1
-				break
+				return
 			}
 
-			if voteReply.VoteGranted{
+			if voteReply.VoteGranted && voteReply.Term == rf.currentTerm{
 				fmt.Printf("peer %d term %d receved vote from peer %d term %d\n",
-				rf.me,rf.currentTerm,i,voteReply.Term)
+				rf.me,rf.currentTerm,peer,voteReply.Term)
 				vote++
 			}else{
 				fmt.Printf("peer %d term %d can't receved vote from peer %d term %d because it had vote for other\n",
-				rf.me,rf.currentTerm,i,voteReply.Term)
+				rf.me,rf.currentTerm,peer,voteReply.Term)
 			}
 		}
 
@@ -493,8 +503,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here (2A, 2B, 2C).
 	rf.status = 1
 	rf.currentTerm = 0
-	rf.voteState.Term = 0
-	rf.voteState.VoteFor = -1
+	rf.voter.VotedFor = -1
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
